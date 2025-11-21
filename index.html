@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Photo Collage</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom styles for the app container */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1f2937; /* Dark background */
+            overflow: hidden; /* Prevent body scroll */
+        }
+        
+        /* The main canvas for panning and zooming */
+        #collage-canvas {
+            cursor: grab;
+            touch-action: none; /* Crucial for preventing default touch behaviors */
+        }
+
+        /* The container holding the collage items. This element is transformed. */
+        #collage-container {
+            will-change: transform;
+            transition: transform 0.1s ease-out;
+            transform-origin: 0 0;
+            min-width: 2000px; /* Ensure a large enough initial space for images */
+            min-height: 2000px;
+        }
+
+        /* Style for individual image containers */
+        .image-card {
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.4);
+            border: 4px solid white;
+            transition: box-shadow 0.2s;
+            cursor: pointer;
+        }
+        .image-card:hover {
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.6);
+            z-index: 100; /* Bring hovered image forward */
+        }
+        .image-card img {
+            pointer-events: none; /* Important so clicks pass through to the card for dragging/panning */
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        /* Loading overlay styles */
+        #loading-overlay {
+            background-color: rgba(31, 41, 55, 0.9);
+            backdrop-filter: blur(5px);
+            z-index: 50;
+        }
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #34D399;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Message if no images are configured */
+        #no-images-message {
+            background-color: rgba(185, 28, 28, 0.8); /* Red warning */
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col">
+
+    <!-- Login Overlay - Shown on load (z-[100] ensures it's on top of everything) -->
+    <div id="login-overlay" class="absolute inset-0 flex flex-col justify-center items-center bg-gray-900 z-[100]">
+        <div class="bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-sm text-center border border-gray-700">
+            <h2 class="text-3xl font-bold text-white mb-6">Access Collage</h2>
+            <input type="password" id="password-input" placeholder="Enter Password" 
+                   class="w-full px-4 py-3 mb-4 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                   autofocus>
+            <button id="login-button" 
+                    class="w-full px-4 py-3 bg-emerald-500 hover:bg-emerald-600 rounded-lg text-white font-semibold shadow-md transition duration-200">
+                Unlock Viewer
+            </button>
+            <p id="login-error" class="text-red-400 mt-4 hidden"></p>
+        </div>
+    </div>
+    
+    <!-- Header / Info Bar (Hidden by default, shown after login) -->
+    <div id="header-bar" class="p-4 bg-gray-800 text-white shadow-lg z-10 flex justify-between items-center hidden">
+        <h1 class="text-xl font-bold">Dynamic Photo Collage Viewer (Server Mode)</h1>
+    </div>
+
+    <!-- Main Canvas Area -->
+    <div id="collage-canvas" class="flex-grow w-full relative overflow-hidden bg-gray-900">
+        
+        <!-- Loading Overlay (Initially hidden) -->
+        <div id="loading-overlay" class="absolute inset-0 flex flex-col justify-center items-center hidden">
+            <div class="loader"></div>
+            <p class="mt-4 text-white text-lg">Generating collage...</p>
+        </div>
+
+        <!-- No Images Message (Hidden until image list is empty) -->
+        <div id="no-images-message" class="absolute inset-0 flex flex-col justify-center items-center text-white p-8 hidden">
+            <div class="bg-red-800/80 p-8 rounded-xl shadow-2xl max-w-lg text-center">
+                <p class="text-2xl font-light mb-4">Configuration Required</p>
+                <p class="text-lg mb-6">Since this is running on a server (like GitHub Pages), you must edit the 
+                <code class="font-mono bg-red-900 px-2 py-1 rounded">IMAGE_FILENAMES</code> 
+                array in the script block to list the names of all your image files inside the 
+                <code class="font-mono bg-red-900 px-2 py-1 rounded">pictures/</code> 
+                folder.</p>
+                <p class="text-sm text-gray-300 mt-4">Example: ['photo1.jpg', 'vacation.png', 'selfie.jpeg']</p>
+            </div>
+        </div>
+        
+        <!-- The Panning and Zooming Container -->
+        <div id="collage-container" class="absolute">
+            <!-- Dynamic Image Cards Go Here -->
+        </div>
+
+    </div>
+
+    <script>
+        // Use an IIFE (Immediately Invoked Function Expression) to create a private scope
+        // and avoid 'Identifier has already been declared' errors in the global scope.
+        (function() {
+            // --- CONFIGURATION REQUIRED FOR SERVER MODE ---
+            // You MUST list your image filenames here exactly as they appear in the pictures/ folder
+            const IMAGE_FILENAMES = [
+                'pictures/image1.jpg',
+                'pictures/image2.png',
+                'pictures/image3.jpeg',
+                // ADD ALL YOUR IMAGES HERE! 
+                // If you have many, you must list them all manually.
+                'https://placehold.co/300x200/f87171/ffffff?text=Image+1', // Placeholder example 1
+                'https://placehold.co/400x300/60a5fa/ffffff?text=Image+2', // Placeholder example 2
+                'https://placehold.co/350x250/34d399/ffffff?text=Image+3', // Placeholder example 3
+                'https://placehold.co/500x400/fbbd23/ffffff?text=Image+4', // Placeholder example 4
+            ];
+            // ---------------------------------------------
+            
+            // --- PASSWORD CONFIGURATION ---
+            const CORRECT_PASSWORD = "meow"; 
+            // ------------------------------
+
+            const canvas = document.getElementById('collage-canvas');
+            const container = document.getElementById('collage-container');
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const noImagesMessage = document.getElementById('no-images-message');
+            const headerBar = document.getElementById('header-bar'); 
+            
+            // Login elements
+            const loginOverlay = document.getElementById('login-overlay'); 
+            const passwordInput = document.getElementById('password-input'); 
+            const loginBtn = document.getElementById('login-button'); 
+            const loginError = document.getElementById('login-error'); 
+            
+            let scale = 1.0;
+            let x = 0;
+            let y = 0;
+
+            let isDragging = false;
+            let lastX, lastY;
+
+            // Configuration for image card sizing and bounds
+            const boundaryWidth = 3500; 
+            const boundaryHeight = 3500;
+            const MAX_CARD_DIMENSION = 450; // Max width or height
+            const PADDING = 20;
+
+            // --- Core Transformation Function ---
+            const updateTransform = () => {
+                container.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+            };
+
+            // --- Authentication Logic ---
+            const checkPassword = () => {
+                if (passwordInput.value === CORRECT_PASSWORD) {
+                    loginOverlay.classList.add('hidden');
+                    headerBar.classList.remove('hidden');
+                    
+                    // Now that we are authenticated, start loading the images
+                    generateCollageFromPaths(IMAGE_FILENAMES); 
+                    centerView();
+                } else {
+                    loginError.textContent = "Incorrect password. Please try again.";
+                    loginError.classList.remove('hidden');
+                    passwordInput.value = ''; // Clear input
+                    passwordInput.focus();
+                }
+            };
+
+            // --- Image Loading and Collage Generation (Modified for Server Paths) ---
+
+            const generateCollageFromPaths = (imagePaths) => {
+                if (imagePaths.length === 0) {
+                    noImagesMessage.classList.remove('hidden');
+                    return;
+                }
+
+                loadingOverlay.classList.remove('hidden');
+                container.innerHTML = ''; 
+                
+                let imagesLoadedCount = 0;
+
+                imagePaths.forEach((path, index) => {
+                    const img = new Image();
+                    img.src = path;
+                    img.alt = path;
+                    img.title = path.split('/').pop(); // Use filename for title
+
+                    // Handle image loading (Success)
+                    img.onload = () => {
+                        let naturalWidth = img.naturalWidth;
+                        let naturalHeight = img.naturalHeight;
+                        let newWidth, newHeight;
+
+                        // 1. Calculate the scaled size based on the maximum allowed dimension
+                        if (naturalWidth > naturalHeight) {
+                            newWidth = Math.min(naturalWidth, MAX_CARD_DIMENSION);
+                            newHeight = (naturalHeight / naturalWidth) * newWidth;
+                        } else {
+                            newHeight = Math.min(naturalHeight, MAX_CARD_DIMENSION);
+                            newWidth = (naturalWidth / naturalHeight) * newHeight;
+                        }
+                        
+                        newWidth = Math.round(newWidth);
+                        newHeight = Math.round(newHeight);
+
+                        // 2. Set card appearance and position
+                        const rotation = (Math.random() * 20) - 10; 
+                        
+                        const posX = Math.random() * (boundaryWidth - newWidth - PADDING);
+                        const posY = Math.random() * (boundaryHeight - newHeight - PADDING);
+
+                        const card = document.createElement('div');
+                        card.className = `image-card absolute rounded-lg overflow-hidden transition-all duration-500`;
+                        card.style.width = `${newWidth}px`;
+                        card.style.height = `${newHeight}px`;
+                        card.style.left = `${posX}px`;
+                        card.style.top = `${posY}px`;
+                        card.style.transform = `rotate(${rotation}deg)`;
+                        
+                        card.appendChild(img);
+                        container.appendChild(card);
+                        
+                        imagesLoadedCount++;
+
+                        // If all images are processed, hide the overlay and center the view
+                        if (imagesLoadedCount === imagePaths.length) {
+                            setTimeout(() => {
+                                loadingOverlay.classList.add('hidden');
+                                // centerView() is now called from checkPassword, but we keep it here 
+                                // as a fallback or for dynamic resize later if needed.
+                            }, 500); 
+                        }
+                    };
+                    
+                    // Handle image loading (Error - e.g., 404 not found)
+                    img.onerror = () => {
+                        console.error(`Failed to load image: ${path}`);
+                        
+                        // Replace missing image with a fallback card
+                        const card = document.createElement('div');
+                        card.className = `image-card absolute rounded-lg flex items-center justify-center text-center p-4 bg-red-900/50 text-red-200`;
+                        card.style.width = `200px`; // Fixed fallback size
+                        card.style.height = `150px`;
+                        
+                        const posX = Math.random() * (boundaryWidth - 200 - PADDING);
+                        const posY = Math.random() * (boundaryHeight - 150 - PADDING);
+                        card.style.left = `${posX}px`;
+                        card.style.top = `${posY}px`;
+                        card.style.transform = `rotate(${(Math.random() * 20) - 10}deg)`;
+
+                        card.innerHTML = `<span class="text-sm">Error loading: ${path.split('/').pop()}</span>`;
+                        container.appendChild(card);
+
+                        imagesLoadedCount++;
+                        if (imagesLoadedCount === imagePaths.length) {
+                            setTimeout(() => {
+                                loadingOverlay.classList.add('hidden');
+                                // centerView() is now called from checkPassword
+                            }, 500);
+                        }
+                    };
+                });
+            };
+
+
+            // --- Panning and Zooming Logic (Unchanged) ---
+            
+            canvas.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                canvas.style.cursor = 'grabbing';
+                lastX = e.clientX;
+                lastY = e.clientY;
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - lastX;
+                const dy = e.clientY - lastY;
+                
+                x += dx;
+                y += dy;
+                
+                lastX = e.clientX;
+                lastY = e.clientY;
+                
+                updateTransform();
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+                canvas.style.cursor = 'grab';
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                
+                const zoomAmount = e.deltaY > 0 ? -0.1 : 0.1;
+                const newScale = Math.max(0.1, Math.min(5.0, scale + zoomAmount));
+
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                x = mouseX - (mouseX - x) * (newScale / scale);
+                y = mouseY - (mouseY - y) * (newScale / scale);
+
+                scale = newScale;
+                updateTransform();
+            });
+
+            let touchStartDist = null;
+
+            canvas.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    isDragging = true;
+                    lastX = e.touches[0].clientX;
+                    lastY = e.touches[0].clientY;
+                    touchStartDist = null;
+                } else if (e.touches.length === 2) {
+                    isDragging = false;
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    touchStartDist = Math.sqrt(dx * dx + dy * dy);
+                }
+            });
+
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+
+                if (e.touches.length === 1 && isDragging) {
+                    const dx = e.touches[0].clientX - lastX;
+                    const dy = e.touches[0].clientY - lastY;
+                    
+                    x += dx;
+                    y += dy;
+
+                    lastX = e.touches[0].clientX;
+                    lastY = e.touches[0].clientY;
+                    
+                    updateTransform();
+                } else if (e.touches.length === 2 && touchStartDist !== null) {
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    const newDist = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (newDist === 0) return;
+
+                    const scaleFactor = newDist / touchStartDist;
+                    const newScale = Math.max(0.1, Math.min(5.0, scale * scaleFactor));
+                    
+                    const rect = canvas.getBoundingClientRect();
+                    const centerClientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                    const centerClientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                    const pinchX = centerClientX - rect.left;
+                    const pinchY = centerClientY - rect.top;
+
+                    x = pinchX - (pinchX - x) * (newScale / scale);
+                    y = pinchY - (pinchY - y) * (newScale / scale);
+                    
+                    scale = newScale;
+                    touchStartDist = newDist;
+                    
+                    updateTransform();
+                }
+            });
+
+            canvas.addEventListener('touchend', () => {
+                isDragging = false;
+                touchStartDist = null;
+            });
+
+            // --- Utility Functions (Unchanged) ---
+
+            const centerView = () => {
+                const canvasRect = canvas.getBoundingClientRect();
+                const contentCenterX = boundaryWidth / 2; 
+                const contentCenterY = boundaryHeight / 2;
+                
+                x = (canvasRect.width / 2) - contentCenterX;
+                y = (canvasRect.height / 2) - contentCenterY;
+                scale = 0.4;
+                updateTransform();
+            };
+
+            const alertBox = (message, title = 'Notification') => {
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]';
+                modal.innerHTML = `
+                    <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
+                        <h3 class="text-xl font-bold mb-3 text-gray-800">${title}</h3>
+                        <p class="text-gray-600 mb-4">${message}</p>
+                        <button id="close-modal" class="w-full py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg">OK</button>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                document.getElementById('close-modal').onclick = () => document.body.removeChild(modal);
+            };
+
+
+            // --- Event Listeners and Initialization ---
+
+            window.onload = () => {
+                // 1. Ensure the login screen is the first thing visible
+                loginOverlay.classList.remove('hidden');
+
+                // 2. Bind the login button click
+                loginBtn.addEventListener('click', checkPassword);
+                
+                // 3. Bind the Enter keypress on the password input
+                passwordInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        checkPassword();
+                    }
+                });
+                
+                // Note: Image loading and view centering is now handled inside checkPassword() 
+                // after successful authentication.
+            };
+        })(); // End of IIFE
+    </script>
+
+</body>
+</html>
